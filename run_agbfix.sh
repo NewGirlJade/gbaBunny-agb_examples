@@ -6,4 +6,4 @@ shift
 gba_path="${elf_path}.gba"
 
 agb-gbafix "$elf_path" -o "$gba_path"
-exec mgba-qt "$gba_path" "$@"
+exec mgba-qt "-3" "$gba_path" "$@"
