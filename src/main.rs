@@ -11,14 +11,15 @@ extern crate alloc;
 
 use agb::display::object::Object;
 use agb::display::tiled::{RegularBackground, RegularBackgroundSize, TileFormat};
-use agb::display::{GraphicsFrame, Priority};
+use agb::display::{Graphics, GraphicsFrame, Priority};
 use agb::fixnum::{Num, Rect, Vector2D, num, rect, vec2};
-use agb::include_aseprite;
+use agb::{Gba, include_aseprite};
 include_aseprite!(
     mod sprites,
     "gfx/sprites.aseprite"
 );
 use agb::include_background_gfx;
+use agb::input::ButtonController;
 include_background_gfx!(
     mod background,
     PLAY_FIELD => deduplicate "gfx/background.aseprite",
@@ -88,6 +89,7 @@ impl Ball {
     pub fn new(position: Vector2D<Fixed>, velocity: Vector2D<Fixed>) -> Self {
         Self { position, velocity }
     }
+
     pub fn update(&mut self, paddle_a: &Paddle, paddle_b: &Paddle) {
         let potential_ball_position = self.position + self.velocity;
 
@@ -127,49 +129,111 @@ impl Ball {
     }
 }
 
-// The main function must take 1 arguments and never returns, and must be marked with
-// the #[agb::entry] macro.
-#[agb::entry]
-fn main(mut gba: agb::Gba) -> ! {
-    let mut gfx = gba.graphics.get();
-    gfx.set_background_palettes(background::PALETTES);
-    let mut bg = RegularBackground::new(
-        Priority::P3,
-        RegularBackgroundSize::Background32x32,
-        TileFormat::FourBpp, //to do eight bpp you need to include 256 after the fat arrow in the include_background_gfx macro above to tell the program you want 256 color mode.
-    );
-    bg.fill_with(&background::PLAY_FIELD);
+struct ComputerPaddle(Paddle);
 
-    let mut button_controller = agb::input::ButtonController::new();
+impl ComputerPaddle {
+    fn new() -> Self {
+        Self(Paddle::new(num!(240 - 16 - 8), num!(8), Orientation::R))
+    }
 
-    let mut ball = Ball::new(vec2(num!(51), num!(50)), vec2(num!(-2), num!(-0.5)));
+    fn update(self: &mut Self, ball: &Ball) {
+        if ball.position.y < self.0.position.y + 28 {
+            self.0.move_by(num!(-2)); //this number is what makes the AI easier or harder to bamboozle
+        }
+        if ball.position.y > self.0.position.y + 20 {
+            self.0.move_by(num!(2));
+        }
+    }
 
-    let mut paddle_a = Paddle::new(num!(8), num!(8), Orientation::L);
-    let mut paddle_b = Paddle::new(num!(240 - 16 - 8), num!(8), Orientation::R);
+    fn show(self: &mut Self, frame: &mut GraphicsFrame) {
+        self.0.show(frame);
+    }
+}
 
-    loop {
-        button_controller.update();
+struct HumanPaddle(Paddle);
+
+impl HumanPaddle {
+    fn new() -> Self {
+         Self(Paddle::new(num!(8), num!(8), Orientation::L))
+    }
+
+    fn update(self: &mut Self, button_controller: &ButtonController) {
         let mut paddle_a_move = button_controller.y_tri() as i32;
         if button_controller.is_pressed(agb::input::Button::A) {
             paddle_a_move *= 2;
         }
-        paddle_a.move_by(Fixed::from(paddle_a_move) * num!(1.2));
+        self.0.move_by(Fixed::from(paddle_a_move) * num!(1.2));
+    }
 
-        if ball.position.y < paddle_b.position.y + 28 {
-            paddle_b.move_by(num!(-2)); //this number is what makes the AI easier or harder to bamboozle
+    fn show(self: &mut Self, frame: &mut GraphicsFrame) {
+        self.0.show(frame);
+    }
+}
+
+struct Model {
+    gba: Gba,
+    button_controller: ButtonController,
+    ball: Ball,
+    human_paddle: HumanPaddle,
+    computer_paddle: ComputerPaddle,
+    bg: RegularBackground,
+}
+
+impl Model {
+    fn new(mut gba: agb::Gba) -> Model {
+        let mut gfx = gba.graphics.get();
+        gfx.set_background_palettes(background::PALETTES);
+        let mut bg = RegularBackground::new(
+            Priority::P3,
+            RegularBackgroundSize::Background32x32,
+            TileFormat::FourBpp, //to do eight bpp you need to include 256 after the fat arrow in the include_background_gfx macro above to tell the program you want 256 color mode.
+        );
+        bg.fill_with(&background::PLAY_FIELD);
+        let button_controller = agb::input::ButtonController::new();
+        let ball = Ball::new(vec2(num!(51), num!(50)), vec2(num!(-2), num!(-0.5)));
+
+        Model {
+            gba,
+            button_controller,
+            ball,
+            human_paddle: HumanPaddle::new(),
+            computer_paddle: ComputerPaddle::new(),
+            bg,
         }
-        if ball.position.y > paddle_b.position.y + 20 {
-            paddle_b.move_by(num!(2));
-        }
+    }
 
-        ball.update(&paddle_a, &paddle_b);
+    fn update(self: &mut Self) {
+        self.button_controller.update();
 
+        // Move human paddle based on controller input
+        self.human_paddle.update(&self.button_controller);
+
+        // Move computer paddle based on where the ball is
+        self.computer_paddle.update(&self.ball);
+
+        // Move the ball, changing direction when it hits a wall or paddle
+        self.ball.update(&self.human_paddle.0, &self.computer_paddle.0);
+    }
+
+    fn show(&mut self) {
+        let mut gfx = self.gba.graphics.get();
         let mut frame = gfx.frame();
 
-        ball.show(&mut frame);
-        paddle_a.show(&mut frame);
-        paddle_b.show(&mut frame);
-        bg.show(&mut frame);
+        self.ball.show(&mut frame);
+        self.human_paddle.show(&mut frame);
+        self.computer_paddle.show(&mut frame);
+        self.bg.show(&mut frame);
         frame.commit();
+    }
+}
+
+// The main function must take 1 arguments and never returns, and must be marked with
+// the #[agb::entry] macro.
+#[agb::entry]
+fn main(mut gba: agb::Gba) -> ! {
+    let mut model = Model::new(gba);
+    loop {
+        model.update();
+        model.show();
     }
 }
